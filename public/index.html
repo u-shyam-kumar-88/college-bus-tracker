@@ -372,14 +372,30 @@
           `Broadcasting live phone GPS for ${activeBusId}. Keep screen on!`,
         );
 
+        // 1. Instantly center map on your current GPS position
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            const { latitude, longitude } = pos.coords;
+            currentPos = { lat: latitude, lng: longitude };
+            busMarker.setLatLng([latitude, longitude]);
+            map.setView([latitude, longitude], 15); // Zooms right into your location!
+          },
+          (err) => console.log("Initial GPS fix error:", err.message),
+          { enableHighAccuracy: true, timeout: 10000 },
+        );
+
+        // 2. Continuously watch and stream live movement
         gpsWatchId = navigator.geolocation.watchPosition(
           (pos) => {
+            const { latitude, longitude, speed, heading } = pos.coords;
+            const speedKmh = speed ? speed * 3.6 : 0;
+
             socket.emit("bus-location-update", {
               busId: activeBusId,
-              lat: pos.coords.latitude,
-              lng: pos.coords.longitude,
-              speedKmh: pos.coords.speed ? pos.coords.speed * 3.6 : 0,
-              heading: pos.coords.heading || 0,
+              lat: latitude,
+              lng: longitude,
+              speedKmh: speedKmh,
+              heading: heading || 0,
             });
           },
           (err) => alert("GPS Error: " + err.message),
