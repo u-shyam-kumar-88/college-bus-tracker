@@ -368,20 +368,22 @@
       function startRealGPS() {
         stopAllTracking();
         if (!navigator.geolocation) return alert("Geolocation not supported");
-        alert(
-          `Broadcasting live phone GPS for ${activeBusId}. Keep screen on!`,
-        );
+        alert(`Broadcasting live phone GPS for ${activeBusId}. Acquiring position...`);
 
-        // 1. Instantly center map on your current GPS position
+        // 1. Instantly center map on current GPS position
         navigator.geolocation.getCurrentPosition(
           (pos) => {
             const { latitude, longitude } = pos.coords;
             currentPos = { lat: latitude, lng: longitude };
             busMarker.setLatLng([latitude, longitude]);
-            map.setView([latitude, longitude], 15); // Zooms right into your location!
+            map.setView([latitude, longitude], 16); // Zooms directly into phone location
+            alert(`GPS Connected! Location: ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
           },
-          (err) => console.log("Initial GPS fix error:", err.message),
-          { enableHighAccuracy: true, timeout: 10000 },
+          (err) => {
+            alert("GPS Fix Error: " + err.message);
+            console.log("Initial GPS fix error:", err.message);
+          },
+          { enableHighAccuracy: false, timeout: 15000, maximumAge: 0 },
         );
 
         // 2. Continuously watch and stream live movement
@@ -398,8 +400,8 @@
               heading: heading || 0,
             });
           },
-          (err) => alert("GPS Error: " + err.message),
-          { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 },
+          (err) => console.log("WatchPosition Error: " + err.message),
+          { enableHighAccuracy: false, maximumAge: 0, timeout: 10000 },
         );
       }
 
