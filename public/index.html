@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>College Bus Live Tracker</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+        font-family:
+          system-ui,
+          -apple-system,
+          sans-serif;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        background: #0f172a;
+        color: #f8fafc;
+        overflow: hidden;
+      }
+
+      #hud {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 16px;
+        background: #1e293b;
+        border-bottom: 1px solid #334155;
+        z-index: 1000;
+      }
+      .metrics {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+      }
+      .card {
+        background: #0f172a;
+        padding: 7px 12px;
+        border-radius: 8px;
+        border: 1px solid #334155;
+        min-width: 110px;
+      }
+      .card span {
+        font-size: 10px;
+        color: #94a3b8;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        display: block;
+      }
+      .card strong {
+        font-size: 16px;
+        color: #38bdf8;
+      }
+
+      select {
+        background: #0f172a;
+        color: #38bdf8;
+        font-weight: 700;
+        font-size: 14px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid #38bdf8;
+        outline: none;
+        cursor: pointer;
+      }
+      .controls {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      button {
+        padding: 9px 13px;
+        border: none;
+        border-radius: 8px;
+        font-weight: 600;
+        font-size: 13px;
+        cursor: pointer;
+        background: #2563eb;
+        color: white;
+        transition: 0.2s;
+      }
+      button:hover {
+        opacity: 0.9;
+      }
+      button.sim {
+        background: #059669;
+      }
+      button.stop {
+        background: #dc2626;
+      }
+
+      #map {
+        flex: 1;
+        width: 100%;
+      }
+      .bus-marker-wrapper {
+        width: 42px;
+        height: 42px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 28px;
+        transition: transform 0.3s ease-out;
+        filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.45));
+      }
+    </style>
+  </head>
+  <body>
+    <div id="hud">
+      <div class="metrics">
+        <select id="busSelect" onchange="switchBus(this.value)">
+          <option value="BUS-01">Loading buses...</option>
+        </select>
+        <div class="card">
+          <span>Live Speed</span><strong id="speedDisplay">0.0 km/h</strong>
+        </div>
+        <div class="card">
+          <span>To Campus</span><strong id="distDisplay">-- km</strong>
+        </div>
+        <div class="card">
+          <span>Stop Alert</span
+          ><strong id="geoStatus" style="color: #facc15">Waiting...</strong>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button class="sim" onclick="startSimulation()">▶ Simulate Bus</button>
+        <button onclick="startRealGPS()">📡 Broadcast Phone GPS</button>
+        <button class="stop" onclick="stopAllTracking()">⏹ Stop</button>
+      </div>
+    </div>
+
+    <div id="map"></div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+      const socket = io();
+      let activeBusId = "BUS-01";
+      let busesData = {};
+      let simTimer = null;
+      let gpsWatchId = null;
+
+      // Campus Final Destination Stop (Agiripalli Campus Coordinates)
+      const campusStop = [16.6667, 80.7308];
+
+      // Demo Route Checkpoints for Desk Simulation
+      const demoRoutes = {
+        "BUS-01": [
+          [16.4971, 80.654],
+          [16.5175, 80.6745],
+          [16.548, 80.705],
+          [16.592, 80.718],
+          [16.635, 80.725],
+          [16.6645, 80.7295],
+        ],
+        "BUS-02": [
+          [16.5417, 80.805],
+          [16.575, 80.782],
+          [16.612, 80.758],
+          [16.645, 80.741],
+          [16.665, 80.7302],
+        ],
+        "BUS-04": [
+          [16.515, 80.632],
+          [16.549, 80.661],
+          [16.591, 80.692],
+          [16.638, 80.719],
+          [16.6655, 80.73],
+        ],
+      };
+
+      // 1. Initialize Leaflet Map
+      const map = L.map("map").setView([16.54, 80.69], 12);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: "&copy; OpenStreetMap contributors",
+      }).addTo(map);
+
+      // Draw Virtual Bus Stop Geofence Circle (500m radius)
+      L.circle(campusStop, { radius: 500, color: "#10b981", fillOpacity: 0.25 })
+        .addTo(map)
+        .bindPopup("<b>Campus Bus Stop (500m Virtual Geofence)</b>");
+
+      // Create Bus Marker
+      const busIcon = L.divIcon({
+        className: "",
+        html: `<div id="busIconInner" class="bus-marker-wrapper">🚌</div>`,
+        iconSize: [42, 42],
+        iconAnchor: [21, 21],
+      });
+      let currentPos = { lat: 16.4971, lng: 80.654 };
+      const busMarker = L.marker([currentPos.lat, currentPos.lng], {
+        icon: busIcon,
+      }).addTo(map);
+
+      // 2. Fetch Saved Buses from Supabase on Startup
+      async function initBuses() {
+        try {
+          const res = await fetch("/api/buses");
+          const list = await res.json();
+          const select = document.getElementById("busSelect");
+          select.innerHTML = "";
+
+          list.forEach((b) => {
+            busesData[b.bus_id] = b;
+            const opt = document.createElement("option");
+            opt.value = b.bus_id;
+            opt.textContent = `${b.bus_id} — ${b.route_name}`;
+            select.appendChild(opt);
+          });
+
+          if (list.length > 0) switchBus(list[0].bus_id);
+        } catch (e) {
+          console.error("Failed to load buses:", e);
+        }
+      }
+
+      // 3. Switch Active Bus & Join Socket Room
+      function switchBus(busId) {
+        stopAllTracking();
+        activeBusId = busId;
+        socket.emit("join-bus-room", busId);
+
+        const saved = busesData[busId];
+        if (saved) {
+          currentPos = { lat: saved.lat, lng: saved.lng };
+          busMarker.setLatLng([saved.lat, saved.lng]);
+          map.panTo([saved.lat, saved.lng]);
+          updateDashboard(saved.lat, saved.lng, saved.speed_kmh || 0);
+        }
+      }
+
+      // 4. Calculate Compass Bearing Angle
+      function getBearing(lat1, lng1, lat2, lng2) {
+        const toRad = (d) => (d * Math.PI) / 180;
+        const toDeg = (r) => (r * 180) / Math.PI;
+        const dLng = toRad(lng2 - lng1);
+        const y = Math.sin(dLng) * Math.cos(toRad(lat2));
+        const x =
+          Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+          Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLng);
+        return (toDeg(Math.atan2(y, x)) + 360) % 360;
+      }
+
+      // 5. Rapido/Blinkit Smooth Marker Interpolation Engine
+      let animFrame = null;
+      function glideMarkerTo(targetLat, targetLng, duration = 2400) {
+        if (animFrame) cancelAnimationFrame(animFrame);
+        const startLat = currentPos.lat;
+        const startLng = currentPos.lng;
+        const startTime = performance.now();
+
+        const angle = getBearing(startLat, startLng, targetLat, targetLng);
+        const iconEl = document.getElementById("busIconInner");
+        if (
+          iconEl &&
+          (Math.abs(targetLat - startLat) > 0.00001 ||
+            Math.abs(targetLng - startLng) > 0.00001)
+        ) {
+          iconEl.style.transform = `rotate(${angle}deg)`;
+        }
+
+        function animate(now) {
+          const progress = Math.min((now - startTime) / duration, 1);
+          currentPos.lat = startLat + (targetLat - startLat) * progress;
+          currentPos.lng = startLng + (targetLng - startLng) * progress;
+          busMarker.setLatLng([currentPos.lat, currentPos.lng]);
+
+          if (progress < 1) animFrame = requestAnimationFrame(animate);
+        }
+        animFrame = requestAnimationFrame(animate);
+      }
+
+      // 6. Haversine Formula for Distance
+      function getDistanceMeters(lat1, lon1, lat2, lon2) {
+        const R = 6371e3;
+        const toRad = (d) => (d * Math.PI) / 180;
+        const dLat = toRad(lat2 - lat1);
+        const dLon = toRad(lon2 - lon1);
+        const a =
+          Math.sin(dLat / 2) ** 2 +
+          Math.cos(toRad(lat1)) *
+            Math.cos(toRad(lat2)) *
+            Math.sin(dLon / 2) ** 2;
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      }
+
+      function updateDashboard(lat, lng, speedKmh) {
+        document.getElementById("speedDisplay").innerText =
+          `${speedKmh.toFixed(1)} km/h`;
+        const distMeters = getDistanceMeters(
+          lat,
+          lng,
+          campusStop[0],
+          campusStop[1],
+        );
+        document.getElementById("distDisplay").innerText =
+          `${(distMeters / 1000).toFixed(2)} km`;
+
+        const geoEl = document.getElementById("geoStatus");
+        if (distMeters <= 500) {
+          geoEl.innerText = "ARRIVING (<500m)!";
+          geoEl.style.color = "#10b981";
+        } else {
+          geoEl.innerText = "En Route";
+          geoEl.style.color = "#facc15";
+        }
+      }
+
+      // 7. Socket Stream Listener
+      socket.on("bus-stream", (data) => {
+        if (data.busId !== activeBusId) return;
+        busesData[data.busId] = {
+          ...busesData[data.busId],
+          lat: data.lat,
+          lng: data.lng,
+          speed_kmh: data.speedKmh,
+        };
+        glideMarkerTo(data.lat, data.lng, 2400);
+        map.panTo([data.lat, data.lng], { animate: true, duration: 1.2 });
+        updateDashboard(data.lat, data.lng, data.speedKmh);
+      });
+
+      // 8. Simulation & Phone GPS Broadcaster
+      function stopAllTracking() {
+        if (simTimer) {
+          clearInterval(simTimer);
+          simTimer = null;
+        }
+        if (gpsWatchId !== null) {
+          navigator.geolocation.clearWatch(gpsWatchId);
+          gpsWatchId = null;
+        }
+      }
+
+      function startSimulation() {
+        stopAllTracking();
+        const route = demoRoutes[activeBusId] || demoRoutes["BUS-01"];
+        let idx = 0;
+        simTimer = setInterval(() => {
+          if (idx >= route.length) idx = 0;
+          const [lat, lng] = route[idx];
+          socket.emit("bus-location-update", {
+            busId: activeBusId,
+            lat,
+            lng,
+            speedKmh: 42 + Math.random() * 14,
+            heading: 0,
+          });
+          idx++;
+        }, 2500);
+      }
+
+      function startRealGPS() {
+        stopAllTracking();
+        if (!navigator.geolocation) return alert("Geolocation not supported");
+        alert(
+          `Broadcasting live phone GPS for ${activeBusId}. Keep screen on!`,
+        );
+
+        gpsWatchId = navigator.geolocation.watchPosition(
+          (pos) => {
+            socket.emit("bus-location-update", {
+              busId: activeBusId,
+              lat: pos.coords.latitude,
+              lng: pos.coords.longitude,
+              speedKmh: pos.coords.speed ? pos.coords.speed * 3.6 : 0,
+              heading: pos.coords.heading || 0,
+            });
+          },
+          (err) => alert("GPS Error: " + err.message),
+          { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 },
+        );
+      }
+
+      initBuses();
+    </script>
+  </body>
+</html>
